@@ -1,39 +1,30 @@
 #ifndef IMAGE_PROCESSOR_H
 #define IMAGE_PROCESSOR_H
 
-#include <QObject>
-#include <QPixmap>
-#include <QPainter>
-#include <QColor>
-#include <QFont>
+#include <windows.h>
+#include <string>
 #include "detection_client.h"
 
-class ImageProcessor : public QObject
-{
-    Q_OBJECT
-
+class ImageProcessor {
 public:
-    explicit ImageProcessor(QObject *parent = nullptr);
+    ImageProcessor();
+    ~ImageProcessor();
 
-    QPixmap drawBoundingBoxes(const QString& imagePath, 
+    HBITMAP drawBoundingBoxes(const std::string& imagePath, 
                              const DetectionResult& result,
                              bool showLabels = true,
                              bool showConfidence = true);
 
-    QPixmap drawBoundingBoxes(const QPixmap& originalPixmap,
+    HBITMAP drawBoundingBoxes(HBITMAP originalBitmap,
                              const DetectionResult& result,
                              bool showLabels = true,
                              bool showConfidence = true);
 
 private:
-    QColor getClassColor(const QString& className);
-    void drawBoundingBox(QPainter& painter, 
-                        const Detection& detection,
-                        bool showLabels,
-                        bool showConfidence);
+    COLORREF getClassColor(const std::string& className);
+    void drawBoundingBox(HDC hdc, const Detection& detection,
+                        bool showLabels, bool showConfidence);
 
-    QMap<QString, QColor> m_classColors;
-    QFont m_labelFont;
     int m_colorIndex;
 };
 

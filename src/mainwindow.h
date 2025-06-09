@@ -1,100 +1,59 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include <QMainWindow>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QPushButton>
-#include <QFileDialog>
-#include <QProgressBar>
-#include <QTextEdit>
-#include <QScrollArea>
-#include <QPixmap>
-#include <QTimer>
-#include <QGroupBox>
-#include <QGridLayout>
-#include <QSpinBox>
-#include <QDoubleSpinBox>
-#include <QCheckBox>
-#include <QComboBox>
-#include <QSplitter>
-
+#include <windows.h>
+#include <string>
+#include <vector>
 #include "detection_client.h"
 #include "image_processor.h"
 
-class MainWindow : public QMainWindow
-{
-    Q_OBJECT
-
+class MainWindow {
 public:
-    MainWindow(QWidget *parent = nullptr);
+    MainWindow(HINSTANCE hInstance);
     ~MainWindow();
 
-private slots:
-    void openImage();
-    void openVideo();
-    void startWebcam();
-    void stopProcessing();
-    void processCurrentFrame();
-    void onDetectionComplete(const DetectionResult& result);
-    void onDetectionError(const QString& error);
-    void updateConfidenceThreshold(double value);
-    void updateIoUThreshold(double value);
-    void toggleClassFilter(const QString& className, bool enabled);
+    bool Create();
+    void Show(int nCmdShow);
+    HWND GetHandle() const { return m_hwnd; }
 
 private:
-    void setupUI();
-    void setupControlPanel();
-    void setupImageDisplay();
-    void setupResultsPanel();
-    void updateImageDisplay(const QPixmap& pixmap);
-    void updateResultsText(const DetectionResult& result);
-    void resetUI();
+    static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
 
-    // UI Components
-    QWidget* m_centralWidget;
-    QSplitter* m_mainSplitter;
-    QSplitter* m_rightSplitter;
+    void CreateControls();
+    void OnOpenImage();
+    void OnDetectionComplete(const DetectionResult& result);
+    void OnDetectionError(const std::wstring& error);
+    void UpdateImageDisplay();
+    void UpdateResultsText(const DetectionResult& result);
+    void ResizeControls();
+
+    HINSTANCE m_hInstance;
+    HWND m_hwnd;
     
-    // Control Panel
-    QGroupBox* m_controlGroup;
-    QPushButton* m_openImageBtn;
-    QPushButton* m_openVideoBtn;
-    QPushButton* m_webcamBtn;
-    QPushButton* m_stopBtn;
-    QDoubleSpinBox* m_confidenceSpinBox;
-    QDoubleSpinBox* m_iouSpinBox;
-    QCheckBox* m_showLabelsCheckBox;
-    QCheckBox* m_showConfidenceCheckBox;
-    QComboBox* m_modelComboBox;
-    
-    // Image Display
-    QScrollArea* m_imageScrollArea;
-    QLabel* m_imageLabel;
-    QProgressBar* m_progressBar;
-    
-    // Results Panel
-    QGroupBox* m_resultsGroup;
-    QTextEdit* m_resultsText;
-    QLabel* m_statsLabel;
+    // Control handles
+    HWND m_hImageStatic;
+    HWND m_hOpenButton;
+    HWND m_hModelCombo;
+    HWND m_hConfidenceEdit;
+    HWND m_hIouEdit;
+    HWND m_hResultsEdit;
+    HWND m_hStatusStatic;
+    HWND m_hProgressBar;
     
     // Backend components
     DetectionClient* m_detectionClient;
     ImageProcessor* m_imageProcessor;
     
     // State
-    QString m_currentImagePath;
-    QString m_currentVideoPath;
+    std::wstring m_currentImagePath;
+    HBITMAP m_hCurrentBitmap;
     bool m_isProcessing;
-    QTimer* m_webcamTimer;
     
     // Settings
     double m_confidenceThreshold;
     double m_iouThreshold;
-    bool m_showLabels;
-    bool m_showConfidence;
-    QString m_selectedModel;
+    std::string m_selectedModel;
 };
 
 #endif // MAINWINDOW_H

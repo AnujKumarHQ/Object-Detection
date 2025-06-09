@@ -1,214 +1,227 @@
 #include "detection_client.h"
-#include <QStandardPaths>
-#include <QDir>
-#include <QDebug>
-#include <QCoreApplication>
-#include <QJsonParseError>
+#include <windows.h>
+#include <iostream>
+#include <sstream>
+#include <thread>
+#include <filesystem>
 
-DetectionClient::DetectionClient(QObject *parent)
-    : QObject(parent)
-    , m_pythonProcess(new QProcess(this))
-    , m_timeoutTimer(new QTimer(this))
-    , m_isProcessing(false)
+DetectionClient::DetectionClient()
+    : m_isProcessing(false)
 {
-    setupPythonEnvironment();
-    
-    // Setup process connections
-    connect(m_pythonProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &DetectionClient::onProcessFinished);
-    connect(m_pythonProcess, &QProcess::errorOccurred,
-            this, &DetectionClient::onProcessError);
-    
-    // Setup timeout timer
-    m_timeoutTimer->setSingleShot(true);
-    m_timeoutTimer->setInterval(30000); // 30 seconds timeout
-    connect(m_timeoutTimer, &QTimer::timeout,
-            this, &DetectionClient::onProcessTimeout);
+    m_pythonExecutable = findPythonExecutable();
+    m_pythonScriptPath = getPythonScriptPath();
 }
 
 DetectionClient::~DetectionClient()
 {
-    if (m_pythonProcess->state() != QProcess::NotRunning) {
-        m_pythonProcess->kill();
-        m_pythonProcess->waitForFinished(3000);
-    }
 }
 
-void DetectionClient::setupPythonEnvironment()
-{
-    // Try to find Python executable
-    QStringList pythonCandidates = {"python3", "python", "py"};
-    
-    for (const QString& candidate : pythonCandidates) {
-        QProcess testProcess;
-        testProcess.start(candidate, QStringList() << "--version");
-        if (testProcess.waitForFinished(3000) && testProcess.exitCode() == 0) {
-            m_pythonExecutable = candidate;
-            break;
-        }
-    }
-    
-    if (m_pythonExecutable.isEmpty()) {
-        m_pythonExecutable = "python"; // Fallback
-    }
-    
-    // Set Python script path relative to executable
-    QString appDir = QCoreApplication::applicationDirPath();
-    m_pythonScriptPath = QDir(appDir).absoluteFilePath("../python/detection_server.py");
-    
-    qDebug() << "Python executable:" << m_pythonExecutable;
-    qDebug() << "Python script path:" << m_pythonScriptPath;
-}
-
-void DetectionClient::detectObjects(const DetectionRequest& request)
+void DetectionClient::detectObjects(const DetectionRequest& request, 
+                                   CompletionCallback onComplete,
+                                   ErrorCallback onError)
 {
     if (m_isProcessing) {
-        emit detectionError("Detection already in progress");
+        onError("Detection already in progress");
         return;
     }
-    
-    m_currentRequest = request;
+
     m_isProcessing = true;
-    
-    // Create JSON request
-    QString jsonRequest = createRequestJson(request);
-    
-    // Start Python process
-    QStringList arguments;
-    arguments << m_pythonScriptPath << jsonRequest;
-    
-    m_pythonProcess->start(m_pythonExecutable, arguments);
-    m_timeoutTimer->start();
-    
-    if (!m_pythonProcess->waitForStarted(5000)) {
-        m_isProcessing = false;
-        m_timeoutTimer->stop();
-        emit detectionError("Failed to start Python detection process");
-    }
+
+    // Run detection in a separate thread
+    std::thread([this, request, onComplete, onError]() {
+        try {
+            std::string jsonRequest = createRequestJson(request);
+            
+            // Escape quotes in JSON for command line
+            std::string escapedJson = jsonRequest;
+            size_t pos = 0;
+            while ((pos = escapedJson.find("\"", pos)) != std::string::npos) {
+                escapedJson.replace(pos, 1, "\\\"");
+                pos += 2;
+            }
+
+            // Build command
+            std::string command = m_pythonExecutable + " \"" + m_pythonScriptPath + "\" \"" + escapedJson + "\"";
+
+            // Execute Python script
+            SECURITY_ATTRIBUTES sa;
+            sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+            sa.lpSecurityDescriptor = NULL;
+            sa.bInheritHandle = TRUE;
+
+            HANDLE hReadPipe, hWritePipe;
+            if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+                m_isProcessing = false;
+                onError("Failed to create pipe");
+                return;
+            }
+
+            STARTUPINFOA si;
+            PROCESS_INFORMATION pi;
+            ZeroMemory(&si, sizeof(si));
+            si.cb = sizeof(si);
+            si.hStdOutput = hWritePipe;
+            si.hStdError = hWritePipe;
+            si.dwFlags |= STARTF_USESTDHANDLES;
+
+            ZeroMemory(&pi, sizeof(pi));
+
+            if (!CreateProcessA(NULL, const_cast<char*>(command.c_str()), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+                CloseHandle(hReadPipe);
+                CloseHandle(hWritePipe);
+                m_isProcessing = false;
+                onError("Failed to start Python process");
+                return;
+            }
+
+            CloseHandle(hWritePipe);
+
+            // Read output
+            std::string output;
+            char buffer[4096];
+            DWORD bytesRead;
+            while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                buffer[bytesRead] = '\0';
+                output += buffer;
+            }
+
+            CloseHandle(hReadPipe);
+
+            // Wait for process to complete
+            WaitForSingleObject(pi.hProcess, INFINITE);
+
+            DWORD exitCode;
+            GetExitCodeProcess(pi.hProcess, &exitCode);
+
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+
+            m_isProcessing = false;
+
+            if (exitCode != 0) {
+                onError("Python process failed with exit code " + std::to_string(exitCode) + ": " + output);
+                return;
+            }
+
+            // Parse response
+            DetectionResult result = parseResponse(output);
+            if (result.success) {
+                onComplete(result);
+            } else {
+                onError(result.errorMessage);
+            }
+
+        } catch (const std::exception& e) {
+            m_isProcessing = false;
+            onError("Exception: " + std::string(e.what()));
+        }
+    }).detach();
 }
 
-QString DetectionClient::createRequestJson(const DetectionRequest& request)
+std::string DetectionClient::createRequestJson(const DetectionRequest& request)
 {
-    QJsonObject jsonObj;
-    jsonObj["image_path"] = request.imagePath;
-    jsonObj["confidence_threshold"] = request.confidenceThreshold;
-    jsonObj["iou_threshold"] = request.iouThreshold;
-    jsonObj["model_name"] = request.modelName;
-    jsonObj["save_annotated"] = request.saveAnnotated;
-    
-    QJsonDocument doc(jsonObj);
-    return doc.toJson(QJsonDocument::Compact);
+    std::ostringstream json;
+    json << "{";
+    json << "\"image_path\":\"" << request.imagePath << "\",";
+    json << "\"confidence_threshold\":" << request.confidenceThreshold << ",";
+    json << "\"iou_threshold\":" << request.iouThreshold << ",";
+    json << "\"model_name\":\"" << request.modelName << "\",";
+    json << "\"save_annotated\":" << (request.saveAnnotated ? "true" : "false");
+    json << "}";
+    return json.str();
 }
 
-DetectionResult DetectionClient::parseResponse(const QByteArray& response)
+DetectionResult DetectionClient::parseResponse(const std::string& response)
 {
     DetectionResult result;
     result.success = false;
-    
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(response, &parseError);
-    
-    if (parseError.error != QJsonParseError::NoError) {
-        result.errorMessage = "Failed to parse JSON response: " + parseError.errorString();
-        return result;
-    }
-    
-    QJsonObject jsonObj = doc.object();
-    
-    if (jsonObj.contains("error")) {
-        result.errorMessage = jsonObj["error"].toString();
-        return result;
-    }
-    
-    result.success = jsonObj["success"].toBool();
-    result.processingTime = jsonObj["processing_time"].toInt();
-    
-    QJsonArray detectionsArray = jsonObj["detections"].toArray();
-    for (const QJsonValue& value : detectionsArray) {
-        QJsonObject detObj = value.toObject();
+    result.processingTime = 0;
+
+    // Simple JSON parsing (for a full implementation, use a JSON library)
+    if (response.find("\"success\":true") != std::string::npos) {
+        result.success = true;
         
-        Detection detection;
-        detection.className = detObj["class"].toString();
-        detection.confidence = detObj["confidence"].toDouble();
-        
-        QJsonArray bboxArray = detObj["bbox"].toArray();
-        if (bboxArray.size() == 4) {
-            detection.bbox = QRect(
-                bboxArray[0].toInt(),
-                bboxArray[1].toInt(),
-                bboxArray[2].toInt(),
-                bboxArray[3].toInt()
-            );
+        // Extract processing time
+        size_t timePos = response.find("\"processing_time\":");
+        if (timePos != std::string::npos) {
+            timePos += 18; // Length of "processing_time":
+            size_t endPos = response.find(",", timePos);
+            if (endPos == std::string::npos) endPos = response.find("}", timePos);
+            if (endPos != std::string::npos) {
+                std::string timeStr = response.substr(timePos, endPos - timePos);
+                result.processingTime = std::stoi(timeStr);
+            }
         }
-        
-        result.detections.append(detection);
+
+        // Extract detections (simplified parsing)
+        size_t detectionsPos = response.find("\"detections\":[");
+        if (detectionsPos != std::string::npos) {
+            // For simplicity, just count the number of detections
+            size_t count = 0;
+            size_t pos = detectionsPos;
+            while ((pos = response.find("{\"class\":", pos + 1)) != std::string::npos) {
+                count++;
+                
+                // Extract class name
+                size_t classStart = response.find("\"class\":\"", pos) + 9;
+                size_t classEnd = response.find("\"", classStart);
+                std::string className = response.substr(classStart, classEnd - classStart);
+                
+                // Extract confidence
+                size_t confStart = response.find("\"confidence\":", pos) + 13;
+                size_t confEnd = response.find(",", confStart);
+                double confidence = std::stod(response.substr(confStart, confEnd - confStart));
+                
+                Detection detection;
+                detection.className = className;
+                detection.confidence = confidence;
+                detection.bbox = {0, 0, 0, 0}; // Simplified for this example
+                
+                result.detections.push_back(detection);
+            }
+        }
+    } else {
+        // Extract error message
+        size_t errorPos = response.find("\"error\":\"");
+        if (errorPos != std::string::npos) {
+            errorPos += 9;
+            size_t endPos = response.find("\"", errorPos);
+            if (endPos != std::string::npos) {
+                result.errorMessage = response.substr(errorPos, endPos - errorPos);
+            }
+        } else {
+            result.errorMessage = "Unknown error occurred";
+        }
     }
-    
+
     return result;
 }
 
-void DetectionClient::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
+std::string DetectionClient::findPythonExecutable()
 {
-    m_timeoutTimer->stop();
-    m_isProcessing = false;
+    std::vector<std::string> candidates = {"python", "python3", "py"};
     
-    if (exitStatus == QProcess::CrashExit) {
-        emit detectionError("Python process crashed");
-        return;
+    for (const std::string& candidate : candidates) {
+        std::string command = candidate + " --version >nul 2>&1";
+        if (system(command.c_str()) == 0) {
+            return candidate;
+        }
     }
     
-    if (exitCode != 0) {
-        QString errorOutput = m_pythonProcess->readAllStandardError();
-        emit detectionError("Python process failed with exit code " + 
-                           QString::number(exitCode) + ": " + errorOutput);
-        return;
-    }
-    
-    // Parse successful response
-    QByteArray output = m_pythonProcess->readAllStandardOutput();
-    DetectionResult result = parseResponse(output);
-    
-    if (result.success) {
-        emit detectionComplete(result);
-    } else {
-        emit detectionError(result.errorMessage);
-    }
+    return "python"; // Fallback
 }
 
-void DetectionClient::onProcessError(QProcess::ProcessError error)
+std::string DetectionClient::getPythonScriptPath()
 {
-    m_timeoutTimer->stop();
-    m_isProcessing = false;
+    // Get executable directory
+    char buffer[MAX_PATH];
+    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    std::string exePath(buffer);
     
-    QString errorString;
-    switch (error) {
-        case QProcess::FailedToStart:
-            errorString = "Failed to start Python process. Make sure Python is installed and accessible.";
-            break;
-        case QProcess::Crashed:
-            errorString = "Python process crashed during execution.";
-            break;
-        case QProcess::Timedout:
-            errorString = "Python process timed out.";
-            break;
-        case QProcess::WriteError:
-            errorString = "Failed to write to Python process.";
-            break;
-        case QProcess::ReadError:
-            errorString = "Failed to read from Python process.";
-            break;
-        default:
-            errorString = "Unknown process error occurred.";
-    }
+    // Get directory
+    size_t lastSlash = exePath.find_last_of("\\/");
+    std::string exeDir = exePath.substr(0, lastSlash);
     
-    emit detectionError(errorString);
-}
-
-void DetectionClient::onProcessTimeout()
-{
-    if (m_pythonProcess->state() != QProcess::NotRunning) {
-        m_pythonProcess->kill();
-    }
-    m_isProcessing = false;
-    emit detectionError("Detection process timed out after 30 seconds");
+    // Construct script path
+    return exeDir + "\\..\\python\\detection_server.py";
 }

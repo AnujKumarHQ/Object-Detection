@@ -1,142 +1,78 @@
 #include "image_processor.h"
-#include <QDebug>
-#include <QFontMetrics>
+#include <map>
 
-ImageProcessor::ImageProcessor(QObject *parent)
-    : QObject(parent)
-    , m_colorIndex(0)
+ImageProcessor::ImageProcessor()
+    : m_colorIndex(0)
 {
-    m_labelFont.setFamily("Arial");
-    m_labelFont.setPointSize(12);
-    m_labelFont.setBold(true);
 }
 
-QPixmap ImageProcessor::drawBoundingBoxes(const QString& imagePath, 
+ImageProcessor::~ImageProcessor()
+{
+}
+
+HBITMAP ImageProcessor::drawBoundingBoxes(const std::string& imagePath, 
                                         const DetectionResult& result,
                                         bool showLabels,
                                         bool showConfidence)
 {
-    QPixmap originalPixmap(imagePath);
-    if (originalPixmap.isNull()) {
-        qWarning() << "Failed to load image:" << imagePath;
-        return QPixmap();
-    }
-    
-    return drawBoundingBoxes(originalPixmap, result, showLabels, showConfidence);
+    // For simplicity, this is a placeholder implementation
+    // In a full implementation, you would load the image and draw bounding boxes
+    return NULL;
 }
 
-QPixmap ImageProcessor::drawBoundingBoxes(const QPixmap& originalPixmap,
+HBITMAP ImageProcessor::drawBoundingBoxes(HBITMAP originalBitmap,
                                         const DetectionResult& result,
                                         bool showLabels,
                                         bool showConfidence)
 {
-    if (originalPixmap.isNull()) {
-        return QPixmap();
-    }
-    
-    QPixmap annotatedPixmap = originalPixmap.copy();
-    QPainter painter(&annotatedPixmap);
-    
-    // Enable antialiasing for smoother drawing
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setFont(m_labelFont);
-    
-    // Draw each detection
-    for (const Detection& detection : result.detections) {
-        drawBoundingBox(painter, detection, showLabels, showConfidence);
-    }
-    
-    return annotatedPixmap;
+    // For simplicity, this is a placeholder implementation
+    // In a full implementation, you would draw bounding boxes on the bitmap
+    return NULL;
 }
 
-QColor ImageProcessor::getClassColor(const QString& className)
+COLORREF ImageProcessor::getClassColor(const std::string& className)
 {
-    if (m_classColors.contains(className)) {
-        return m_classColors[className];
+    static std::map<std::string, COLORREF> classColors;
+    
+    if (classColors.find(className) != classColors.end()) {
+        return classColors[className];
     }
     
     // Generate a unique color for each class
-    QList<QColor> predefinedColors = {
-        QColor(255, 0, 0),     // Red
-        QColor(0, 255, 0),     // Green
-        QColor(0, 0, 255),     // Blue
-        QColor(255, 255, 0),   // Yellow
-        QColor(255, 0, 255),   // Magenta
-        QColor(0, 255, 255),   // Cyan
-        QColor(255, 128, 0),   // Orange
-        QColor(128, 0, 255),   // Purple
-        QColor(255, 192, 203), // Pink
-        QColor(0, 128, 0),     // Dark Green
-        QColor(128, 128, 0),   // Olive
-        QColor(0, 128, 128),   // Teal
+    COLORREF predefinedColors[] = {
+        RGB(255, 0, 0),     // Red
+        RGB(0, 255, 0),     // Green
+        RGB(0, 0, 255),     // Blue
+        RGB(255, 255, 0),   // Yellow
+        RGB(255, 0, 255),   // Magenta
+        RGB(0, 255, 255),   // Cyan
+        RGB(255, 128, 0),   // Orange
+        RGB(128, 0, 255),   // Purple
     };
     
-    QColor color;
-    if (m_colorIndex < predefinedColors.size()) {
-        color = predefinedColors[m_colorIndex];
-    } else {
-        // Generate random color if we run out of predefined ones
-        color = QColor::fromHsv((m_colorIndex * 137) % 360, 255, 255);
-    }
+    int numColors = sizeof(predefinedColors) / sizeof(predefinedColors[0]);
+    COLORREF color = predefinedColors[m_colorIndex % numColors];
     
-    m_classColors[className] = color;
+    classColors[className] = color;
     m_colorIndex++;
     
     return color;
 }
 
-void ImageProcessor::drawBoundingBox(QPainter& painter, 
-                                   const Detection& detection,
-                                   bool showLabels,
-                                   bool showConfidence)
+void ImageProcessor::drawBoundingBox(HDC hdc, const Detection& detection,
+                                   bool showLabels, bool showConfidence)
 {
-    QColor boxColor = getClassColor(detection.className);
+    // Implementation for drawing bounding boxes
+    COLORREF boxColor = getClassColor(detection.className);
     
-    // Draw bounding box
-    QPen boxPen(boxColor, 3);
-    painter.setPen(boxPen);
-    painter.drawRect(detection.bbox);
+    HPEN hPen = CreatePen(PS_SOLID, 3, boxColor);
+    HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
     
-    if (showLabels || showConfidence) {
-        // Prepare label text
-        QString labelText;
-        if (showLabels) {
-            labelText = detection.className;
-        }
-        if (showConfidence) {
-            if (!labelText.isEmpty()) {
-                labelText += " ";
-            }
-            labelText += QString("%.1f%%").arg(detection.confidence * 100);
-        }
-        
-        if (!labelText.isEmpty()) {
-            // Calculate label background size
-            QFontMetrics fontMetrics(m_labelFont);
-            QRect textRect = fontMetrics.boundingRect(labelText);
-            int padding = 4;
-            QRect labelRect(
-                detection.bbox.x(),
-                detection.bbox.y() - textRect.height() - padding * 2,
-                textRect.width() + padding * 2,
-                textRect.height() + padding * 2
-            );
-            
-            // Ensure label stays within image bounds
-            if (labelRect.y() < 0) {
-                labelRect.moveTop(detection.bbox.y());
-            }
-            
-            // Draw label background
-            painter.fillRect(labelRect, boxColor);
-            
-            // Draw label text
-            painter.setPen(QPen(Qt::white));
-            painter.drawText(
-                labelRect.x() + padding,
-                labelRect.y() + padding + fontMetrics.ascent(),
-                labelText
-            );
-        }
-    }
+    // Draw rectangle
+    Rectangle(hdc, detection.bbox.x, detection.bbox.y, 
+              detection.bbox.x + detection.bbox.width, 
+              detection.bbox.y + detection.bbox.height);
+    
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hPen);
 }

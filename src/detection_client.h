@@ -1,66 +1,56 @@
 #ifndef DETECTION_CLIENT_H
 #define DETECTION_CLIENT_H
 
-#include <QObject>
-#include <QProcess>
-#include <QTimer>
-#include <QRect>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QJsonDocument>
+#include <string>
+#include <vector>
+#include <functional>
 
 struct Detection {
-    QString className;
+    std::string className;
     double confidence;
-    QRect bbox;
+    struct {
+        int x, y, width, height;
+    } bbox;
 };
 
 struct DetectionResult {
-    QList<Detection> detections;
+    std::vector<Detection> detections;
     int processingTime;
     bool success;
-    QString errorMessage;
+    std::string errorMessage;
 };
 
 struct DetectionRequest {
-    QString imagePath;
+    std::string imagePath;
     double confidenceThreshold;
     double iouThreshold;
-    QString modelName;
+    std::string modelName;
     bool saveAnnotated;
 };
 
-class DetectionClient : public QObject
-{
-    Q_OBJECT
-
+class DetectionClient {
 public:
-    explicit DetectionClient(QObject *parent = nullptr);
+    DetectionClient();
     ~DetectionClient();
 
-    void detectObjects(const DetectionRequest& request);
+    using CompletionCallback = std::function<void(const DetectionResult&)>;
+    using ErrorCallback = std::function<void(const std::string&)>;
+
+    void detectObjects(const DetectionRequest& request, 
+                      CompletionCallback onComplete,
+                      ErrorCallback onError);
+
     bool isProcessing() const { return m_isProcessing; }
 
-signals:
-    void detectionComplete(const DetectionResult& result);
-    void detectionError(const QString& error);
-
-private slots:
-    void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
-    void onProcessError(QProcess::ProcessError error);
-    void onProcessTimeout();
-
 private:
-    void setupPythonEnvironment();
-    QString createRequestJson(const DetectionRequest& request);
-    DetectionResult parseResponse(const QByteArray& response);
+    std::string createRequestJson(const DetectionRequest& request);
+    DetectionResult parseResponse(const std::string& response);
+    std::string findPythonExecutable();
+    std::string getPythonScriptPath();
 
-    QProcess* m_pythonProcess;
-    QTimer* m_timeoutTimer;
     bool m_isProcessing;
-    QString m_pythonScriptPath;
-    QString m_pythonExecutable;
-    DetectionRequest m_currentRequest;
+    std::string m_pythonExecutable;
+    std::string m_pythonScriptPath;
 };
 
 #endif // DETECTION_CLIENT_H
