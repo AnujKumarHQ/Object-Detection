@@ -28,11 +28,43 @@ bool WebcamCapture::initialize(int deviceId)
     m_deviceId = deviceId;
     
     // Test if camera is available using Python OpenCV
-    std::string testScript = getPythonScriptPath() + "\\..\\test_camera.py";
-    std::string command = "python \"" + testScript + "\" " + std::to_string(deviceId);
+    std::string pythonDir = getPythonScriptPath();
+    std::string testScript = pythonDir + "\\test_camera.py";
+    
+    // Check if test script exists
+    if (!std::filesystem::exists(testScript)) {
+        std::cerr << "Test script not found: " << testScript << std::endl;
+        return false;
+    }
+    
+    // Build command with proper path handling
+    std::string command = "python \"" + testScript + "\" " + std::to_string(deviceId) + " 2>nul";
+    
+    std::cout << "Testing camera with command: " << command << std::endl;
     
     int result = system(command.c_str());
-    return result == 0;
+    
+    if (result != 0) {
+        std::cerr << "Camera test failed with exit code: " << result << std::endl;
+        
+        // Try alternative Python commands
+        std::vector<std::string> pythonCmds = {"python3", "py", "python.exe"};
+        for (const auto& pythonCmd : pythonCmds) {
+            std::string altCommand = pythonCmd + " \"" + testScript + "\" " + std::to_string(deviceId) + " 2>nul";
+            std::cout << "Trying alternative: " << altCommand << std::endl;
+            
+            result = system(altCommand.c_str());
+            if (result == 0) {
+                std::cout << "Camera test successful with: " << pythonCmd << std::endl;
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    std::cout << "Camera test successful" << std::endl;
+    return true;
 }
 
 void WebcamCapture::startCapture(FrameCallback onFrame, ErrorCallback onError)
@@ -87,17 +119,38 @@ void WebcamCapture::captureLoop()
 std::string WebcamCapture::saveFrame()
 {
     // Use Python script to capture frame
-    std::string captureScript = getPythonScriptPath() + "\\..\\capture_frame.py";
+    std::string pythonDir = getPythonScriptPath();
+    std::string captureScript = pythonDir + "\\capture_frame.py";
     std::string framePath = m_tempDir + "frame_" + std::to_string(m_frameCounter++) + ".jpg";
     
+    // Check if capture script exists
+    if (!std::filesystem::exists(captureScript)) {
+        std::cerr << "Capture script not found: " << captureScript << std::endl;
+        return "";
+    }
+    
+    // Build command with proper error handling
     std::string command = "python \"" + captureScript + "\" " + 
-                         std::to_string(m_deviceId) + " \"" + framePath + "\"";
+                         std::to_string(m_deviceId) + " \"" + framePath + "\" 2>nul";
     
     int result = system(command.c_str());
     if (result == 0 && std::filesystem::exists(framePath)) {
         return framePath;
     }
     
+    // Try alternative Python commands if default fails
+    std::vector<std::string> pythonCmds = {"python3", "py", "python.exe"};
+    for (const auto& pythonCmd : pythonCmds) {
+        std::string altCommand = pythonCmd + " \"" + captureScript + "\" " + 
+                               std::to_string(m_deviceId) + " \"" + framePath + "\" 2>nul";
+        
+        result = system(altCommand.c_str());
+        if (result == 0 && std::filesystem::exists(framePath)) {
+            return framePath;
+        }
+    }
+    
+    std::cerr << "Frame capture failed with all Python commands" << std::endl;
     return "";
 }
 
