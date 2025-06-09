@@ -19,6 +19,8 @@ add_executable(YOLODetectionApp WIN32
     src/detection_client.h
     src/image_processor.cpp
     src/image_processor.h
+    src/webcam_capture.cpp
+    src/webcam_capture.h
     src/resource.h
     src/app.rc
 )
